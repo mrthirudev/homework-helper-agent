@@ -1,0 +1,10 @@
+name = "homework-helper-proxy"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+
+# Set this to your GitHub Pages URL once you know it, e.g.:
+# [vars]
+# ALLOWED_ORIGIN = "https://yourusername.github.io"
+#
+# (Leaving it unset defaults to allowing any origin — fine for initial
+# testing, but tighten it once your Pages site is live. See DEPLOY.md.)
