@@ -2,8 +2,11 @@ name = "homework-helper-proxy"
 main = "worker.js"
 compatibility_date = "2024-09-23"
 
+[vars]
+# "gemini" (free tier, no credit card) or "openai" (once you have billing set up)
+PROVIDER = "gemini"
+
 # Set this to your GitHub Pages URL once you know it, e.g.:
-# [vars]
 # ALLOWED_ORIGIN = "https://yourusername.github.io"
 #
 # (Leaving it unset defaults to allowing any origin — fine for initial

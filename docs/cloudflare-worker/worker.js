@@ -6,10 +6,15 @@
  * Why this exists: GitHub Pages can only serve static files (HTML/JS/CSS).
  * It cannot hold a secret API key safely. This Worker is the piece that
  * *can* hold the key securely (as a Cloudflare "secret") and talks to
- * OpenAI on behalf of the static webpage.
+ * an LLM provider on behalf of the static webpage.
+ *
+ * Supports TWO interchangeable providers, switchable via the PROVIDER
+ * environment variable (set in wrangler.toml or the Cloudflare dashboard):
+ *   PROVIDER = "gemini"  (default — free tier, no credit card needed)
+ *   PROVIDER = "openai"  (once you have OpenAI billing set up)
  *
  * Flow:
- *   Browser (index.html) --POST messages--> This Worker --> OpenAI API
+ *   Browser (index.html) --POST messages--> This Worker --> Gemini or OpenAI
  *                         <--reply text------              <--
  */
 
@@ -49,14 +54,13 @@ give them the final answer. Follow these rules on every reply:
 8. FORMAT: Use short paragraphs and numbered/bulleted steps. Avoid walls
    of text.`;
 
-const MODEL_NAME = "gpt-4o-mini";
+const OPENAI_MODEL = "gpt-4o-mini";
+const GEMINI_MODEL = "gemini-2.5-flash";
 
 export default {
   async fetch(request, env) {
     // ALLOWED_ORIGIN should be set to your GitHub Pages URL, e.g.
     // "https://yourusername.github.io" — see DEPLOY.md.
-    // Falls back to "*" (any site) if not set, which is fine for testing
-    // but looser than you'd want for a long-running public deployment.
     const allowedOrigin = env.ALLOWED_ORIGIN || "*";
 
     const corsHeaders = {
@@ -99,33 +103,18 @@ export default {
     // Basic guardrail: cap how much history gets forwarded, to control cost.
     const trimmedMessages = messages.slice(-20);
 
+    // PROVIDER defaults to "gemini" (free tier, no credit card).
+    // Set PROVIDER = "openai" in wrangler.toml (or Cloudflare dashboard)
+    // once you have OpenAI billing set up.
+    const provider = (env.PROVIDER || "gemini").toLowerCase();
+
     try {
-      const openaiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${env.OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: MODEL_NAME,
-          max_tokens: 1000,
-          messages: [{ role: "system", content: SYSTEM_PROMPT }, ...trimmedMessages],
-        }),
-      });
-
-      const data = await openaiResponse.json();
-
-      if (!openaiResponse.ok) {
-        return new Response(
-          JSON.stringify({ error: data.error?.message || "OpenAI request failed" }),
-          {
-            status: openaiResponse.status,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          }
-        );
+      let reply;
+      if (provider === "openai") {
+        reply = await callOpenAI(trimmedMessages, env.OPENAI_API_KEY);
+      } else {
+        reply = await callGemini(trimmedMessages, env.GEMINI_API_KEY);
       }
-
-      const reply = data.choices?.[0]?.message?.content ?? "Sorry, I didn't get a response.";
 
       return new Response(JSON.stringify({ reply }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -138,3 +127,52 @@ export default {
     }
   },
 };
+
+async function callOpenAI(messages, apiKey) {
+  if (!apiKey) throw new Error("OPENAI_API_KEY secret is not set on this Worker");
+
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      max_tokens: 1000,
+      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
+    }),
+  });
+
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error?.message || "OpenAI request failed");
+  return data.choices?.[0]?.message?.content ?? "Sorry, I didn't get a response.";
+}
+
+async function callGemini(messages, apiKey) {
+  if (!apiKey) throw new Error("GEMINI_API_KEY secret is not set on this Worker");
+
+  // Gemini uses "model" instead of "assistant" for the AI's turns, and
+  // expects each turn's text wrapped in a "parts" array.
+  const contents = messages.map((m) => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: [{ text: m.content }],
+  }));
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents,
+        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        generationConfig: { maxOutputTokens: 1000 },
+      }),
+    }
+  );
+
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error?.message || "Gemini request failed");
+  return data.candidates?.[0]?.content?.parts?.[0]?.text ?? "Sorry, I didn't get a response.";
+}
